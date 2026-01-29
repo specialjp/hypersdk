@@ -81,6 +81,8 @@ use serde_with::serde_as;
 use crate::hypercore::{Chain, Cloid, OidOrCloid, SpotToken};
 
 pub mod api;
+pub mod asset_ctx;
+pub use asset_ctx::{AssetCtx, MetaAndAssetCtxsResponse};
 pub(super) mod solidity;
 
 // Re-export important raw types for convenience
@@ -122,6 +124,7 @@ pub const ARBITRUM_TESTNET_EIP712_DOMAIN: Eip712Domain = eip712_domain! {
 pub struct Dex {
     pub(super) name: String,
     pub(super) index: usize,
+    pub(super) assets: Vec<String>,
 }
 
 impl Dex {
@@ -131,18 +134,25 @@ impl Dex {
     ///
     /// - `name`: The name of the DEX.
     /// - `index`: The numerical index associated with the DEX.
+    /// - `assets`: List of assets available on the DEX.
     ///
     /// # Returns
     ///
     /// A new `Dex` instance.
-    pub fn new(name: String, index: usize) -> Dex {
-        Dex { name, index }
+    pub fn new(name: String, index: usize, assets: Vec<String>) -> Dex {
+        Dex { name, index, assets }
     }
 
     /// Returns the DEX name.
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// Returns the list of assets on this DEX.
+    #[must_use]
+    pub fn assets(&self) -> &[String] {
+        &self.assets
     }
 }
 
@@ -2618,6 +2628,10 @@ pub struct CandleSnapshotRequest {
 #[serde(tag = "type")]
 pub(super) enum InfoRequest {
     Meta {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
+    MetaAndAssetCtxs {
         #[serde(skip_serializing_if = "Option::is_none")]
         dex: Option<String>,
     },

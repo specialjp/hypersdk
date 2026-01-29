@@ -269,6 +269,15 @@ impl Client {
         super::perp_dexs(self.base_url.clone(), self.http_client.clone()).await
     }
 
+    /// Fetches metadata and asset contexts including stats like open interest and volume.
+    #[inline(always)]
+    pub async fn meta_and_asset_ctxs(
+        &self,
+        dex: Option<Dex>,
+    ) -> Result<(crate::hypercore::PerpTokens, Vec<crate::hypercore::types::AssetCtx>)> {
+        super::perp_meta_and_asset_ctxs(self.base_url.clone(), self.http_client.clone(), dex).await
+    }
+
     /// Fetches all available spot markets.
     ///
     /// # Example
