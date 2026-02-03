@@ -54,7 +54,7 @@ use rust_decimal::Decimal;
 use serde::Deserialize;
 use url::Url;
 
-use super::signing::*;
+use super::{AssetTarget, signing::*};
 use crate::hypercore::{
     ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, MultiSigConfig, OidOrCloid,
     PerpMarket, Signature, SpotMarket, SpotToken,
@@ -375,7 +375,7 @@ impl Client {
     ///
     /// # async fn example() -> anyhow::Result<()> {
     /// let client = hypercore::mainnet();
-    /// let mids = client.all_mids().await?;
+    /// let mids = client.all_mids(None).await?;
     ///
     /// for (market, price) in mids {
     ///     println!("{}: {}", market, price);
@@ -641,7 +641,7 @@ impl Client {
     /// Retrieves historical funding rates for a perpetual market.
     ///
     /// Returns funding rate snapshots for the specified coin within the given time range.
-    /// Funding rates are typically applied every 8 hours.
+    /// Hyperliquid pays funding every hour.
     ///
     /// # Parameters
     ///
@@ -1127,7 +1127,7 @@ impl Client {
             })?;
 
             match resp {
-                Response::Ok(OkResponse::Order { statuses }) => Ok(statuses),
+                Response::Ok(OkResponse::Cancel { statuses }) => Ok(statuses),
                 Response::Err(err) => Err(ActionError { ids: cloids, err }),
                 _ => Err(ActionError {
                     ids: cloids,
@@ -1343,8 +1343,8 @@ impl Client {
             signer,
             SendAsset {
                 destination: signer.address(),
-                source_dex: "".into(),
-                destination_dex: "spot".into(),
+                source_dex: AssetTarget::Perp,
+                destination_dex: AssetTarget::Spot,
                 token: SendToken(token),
                 from_sub_account: "".into(),
                 amount,
@@ -1376,8 +1376,8 @@ impl Client {
             signer,
             SendAsset {
                 destination: signer.address(),
-                source_dex: "spot".into(),
-                destination_dex: "".into(),
+                source_dex: AssetTarget::Spot,
+                destination_dex: AssetTarget::Perp,
                 token: SendToken(token),
                 from_sub_account: "".into(),
                 amount,
