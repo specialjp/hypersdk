@@ -90,6 +90,8 @@ pub enum Action {
     ConvertToMultiSigUser(ConvertToMultiSigUser),
     /// Update isolated margin.
     UpdateIsolatedMargin(UpdateIsolatedMargin),
+    /// Update leverage.
+    UpdateLeverage(UpdateLeverage),
     /// Multi-sig action.
     MultiSig(MultiSigAction),
     /// Invalidate a request.
@@ -193,6 +195,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
@@ -283,6 +286,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
@@ -371,6 +375,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::Noop => {
                 let expires_after =
                     maybe_expires_after.map(|after| after.timestamp_millis() as u64);
@@ -660,6 +665,18 @@ pub struct UpdateIsolatedMargin {
     pub is_buy: bool,
     /// Margin delta in USD (scaled integer representation).
     pub ntli: u64,
+}
+
+/// Request to update leverage.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLeverage {
+    /// Asset index.
+    pub asset: usize,
+    /// `true` for cross margin, `false` for isolated margin.
+    pub is_cross: bool,
+    /// Leverage value.
+    pub leverage: u32,
 }
 
 /// Multi-signature action payload.

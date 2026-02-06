@@ -1514,6 +1514,40 @@ impl Client {
         }
     }
 
+    /// Update leverage for an asset.
+    pub async fn update_leverage<S: SignerSync>(
+        &self,
+        signer: &S,
+        asset: usize,
+        is_cross: bool,
+        leverage: u32,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let resp = self
+            .sign_and_send_sync(
+                signer,
+                Action::UpdateLeverage(crate::hypercore::types::api::UpdateLeverage {
+                    asset,
+                    is_cross,
+                    leverage,
+                }),
+                nonce,
+                vault_address,
+                expires_after,
+            )
+            .await?;
+
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => {
+                anyhow::bail!("update_leverage: {err}")
+            }
+            _ => anyhow::bail!("update_leverage: unexpected response type: {resp:?}"),
+        }
+    }
+
     /// Executes a multisig action on Hyperliquid.
     ///
     /// This method allows multiple signers to authorize a single action (such as placing orders,
