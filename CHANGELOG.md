@@ -14,11 +14,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - New typed WS payloads for user events, TWAP slice/history streams, and active asset data
 - Forward-compatible fallback parsing for unknown `userEvents` payload variants
 - New example: `examples/hypercore/websocket-user-events.rs`
+- `UpdateLeverage` action and `Client::update_leverage()` method for updating asset leverage
+- `Builder` struct and optional `builder` field on `BatchOrder` for DeFi builder fee codes
+- `Client::meta_and_asset_ctxs()` method for fetching perp metadata with asset contexts (OI, volume, funding)
+- `AssetCtx` type with market stats (mark price, open interest, funding, volume)
+- `Dex::assets()` accessor returning available assets on a HIP-3 DEX
+- `MetaAndAssetCtxs` info request variant
+- Made `PerpTokens` and `PerpUniverseItem` fields public
+- **hypecli**: `leverage` command for updating leverage and margin mode on perpetual positions
 
 ### Changed
 
 - Extended WebSocket docs/snippets in README and crate docs to include advanced user streams
 - Added serde test coverage for the new WS channels and payload schemas
+- Added test coverage for `Builder`, `BatchOrder.builder`, `UpdateLeverage`, `AssetCtx`, and `MetaAndAssetCtxs`
+
+### Fixed
+
+- Removed accidentally committed `.DS_Store` files
+- **hypecli**: Added missing `builder: None` to `BatchOrder` in order commands
+- Removed stale `// TODO: perpDexs` comment
 
 ## [v0.1.5] - 2026-01-12
 
