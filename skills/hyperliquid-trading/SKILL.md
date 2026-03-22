@@ -168,6 +168,35 @@ hypecli order cancel \
   --cloid 0x0123456789abcdef0123456789abcdef
 ```
 
+## Updating Leverage
+
+Set the leverage and margin mode for a perpetual position:
+
+```bash
+# Set 10x cross margin on BTC
+hypecli leverage \
+  --keystore default --password yourpassword \
+  --asset BTC \
+  --leverage 10 \
+  --cross
+
+# Set 5x isolated margin on ETH
+hypecli leverage \
+  --keystore default --password yourpassword \
+  --asset ETH \
+  --leverage 5
+
+# Set leverage on a HIP-3 DEX asset
+hypecli leverage \
+  --keystore default --password yourpassword \
+  --asset xyz:BTC \
+  --leverage 20 \
+  --cross
+```
+
+- `--cross` enables cross margin mode (shared margin across positions). Omit for isolated margin.
+- Leverage must be within the asset's `max_leverage` (see `hypecli perps`).
+
 ## Checking Positions and Balances
 
 View your current positions, margin, and balances:
@@ -251,6 +280,7 @@ hypecli order cancel \
 | Trade on HIP-3 DEX   | `hypecli order limit --asset xyz:BTC --side buy --price 50000 --size 0.1 ...`       |
 | Cancel by OID        | `hypecli order cancel --asset BTC --oid 123456789 ...`                              |
 | Cancel by CLOID      | `hypecli order cancel --asset BTC --cloid 0x... ...`                                |
+| Update leverage      | `hypecli leverage --asset BTC --leverage 10 --cross ...`                            |
 | Check positions      | `hypecli balance 0xAddress`                                                         |
 
 ## Links

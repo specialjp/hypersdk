@@ -85,6 +85,8 @@ use serde_with::{DisplayFromStr, serde_as};
 use crate::hypercore::{Chain, Cloid, OidOrCloid, SpotToken};
 
 pub mod api;
+pub mod asset_ctx;
+pub use asset_ctx::{AssetCtx, MetaAndAssetCtxsResponse};
 pub(super) mod solidity;
 
 // Re-export important raw types for convenience
@@ -168,6 +170,7 @@ pub struct Dex {
     pub(super) name: String,
     pub(super) index: usize,
     pub(super) deployer_fee_scale: Option<Decimal>,
+    pub(super) assets: Vec<String>,
 }
 
 impl Dex {
@@ -177,15 +180,17 @@ impl Dex {
     ///
     /// - `name`: The name of the DEX.
     /// - `index`: The numerical index associated with the DEX.
+    /// - `assets`: List of assets available on the DEX.
     ///
     /// # Returns
     ///
     /// A new `Dex` instance.
-    pub fn new(name: String, index: usize) -> Dex {
+    pub fn new(name: String, index: usize, assets: Vec<String>) -> Dex {
         Dex {
             name,
             index,
             deployer_fee_scale: None,
+            assets,
         }
     }
 
@@ -199,6 +204,12 @@ impl Dex {
     #[must_use]
     pub fn deployer_fee_scale(&self) -> Option<Decimal> {
         self.deployer_fee_scale
+    }
+
+    /// Returns the list of assets on this DEX.
+    #[must_use]
+    pub fn assets(&self) -> &[String] {
+        &self.assets
     }
 }
 
@@ -1966,13 +1977,46 @@ impl OrderResponseStatus {
 ///         }
 ///     ],
 ///     grouping: OrderGrouping::Na,
+///     builder: None,
 /// };
 /// ```
+/// Builder fee configuration for DeFi builder codes.
+///
+/// When included in a [`BatchOrder`], the builder receives a fee on each fill.
+/// The user must have previously approved the builder fee via `ApproveBuilderFee`.
+///
+/// # Fields
+///
+/// - `b` – The builder's Ethereum address (lowercase hex).
+/// - `f` – Fee in **tenths of a basis point** (e.g., `10` = 1bp = 0.01%).
+///   Max: 100 for perps (0.1%), 1000 for spot (1%).
+///
+/// # Example
+///
+/// ```rust
+/// use hypersdk::hypercore::types::Builder;
+///
+/// let builder = Builder {
+///     b: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+///     f: 10, // 1 basis point = 0.01%
+/// };
+/// ```
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Builder {
+    /// Builder address (lowercase hex with 0x prefix).
+    pub b: String,
+    /// Fee in tenths of a basis point.
+    pub f: u32,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchOrder {
     pub orders: Vec<OrderRequest>,
     pub grouping: OrderGrouping,
+    /// Optional builder fee. When set, each fill generates a fee for the builder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub builder: Option<Builder>,
 }
 
 /// Order grouping strategy.
@@ -3081,6 +3125,10 @@ pub(super) enum InfoRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
         dex: Option<String>,
     },
+    MetaAndAssetCtxs {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        dex: Option<String>,
+    },
     SpotMeta,
     PerpDexs,
     FrontendOpenOrders {
@@ -3766,6 +3814,81 @@ mod tests {
 
         // Check timestamp
         assert_eq!(state.time, 1768397010203);
+    }
+
+    #[test]
+    fn test_builder_serialization() {
+        let builder = Builder {
+            b: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+            f: 10,
+        };
+        let json = serde_json::to_string(&builder).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["b"], "0x1234567890abcdef1234567890abcdef12345678");
+        assert_eq!(parsed["f"], 10);
+
+        // Round-trip
+        let deserialized: Builder = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.b, builder.b);
+        assert_eq!(deserialized.f, builder.f);
+    }
+
+    #[test]
+    fn test_batch_order_builder_field_serialization() {
+        use rust_decimal::dec;
+
+        // Without builder — "builder" key should be absent
+        let batch = BatchOrder {
+            orders: vec![OrderRequest {
+                asset: 0,
+                is_buy: true,
+                limit_px: dec!(50000),
+                sz: dec!(0.1),
+                reduce_only: false,
+                order_type: OrderTypePlacement::Limit {
+                    tif: TimeInForce::Gtc,
+                },
+                cloid: Default::default(),
+            }],
+            grouping: OrderGrouping::Na,
+            builder: None,
+        };
+        let json = serde_json::to_string(&batch).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("builder").is_none(), "builder should be absent when None");
+
+        // With builder — "builder" key should be present
+        let batch_with_builder = BatchOrder {
+            orders: vec![],
+            grouping: OrderGrouping::Na,
+            builder: Some(Builder {
+                b: "0xabc".to_string(),
+                f: 10,
+            }),
+        };
+        let json2 = serde_json::to_string(&batch_with_builder).unwrap();
+        let parsed2: serde_json::Value = serde_json::from_str(&json2).unwrap();
+        assert_eq!(parsed2["builder"]["b"], "0xabc");
+        assert_eq!(parsed2["builder"]["f"], 10);
+    }
+
+    #[test]
+    fn test_meta_and_asset_ctxs_info_request_serialization() {
+        // Without dex
+        let req = super::InfoRequest::MetaAndAssetCtxs { dex: None };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "metaAndAssetCtxs");
+        assert!(parsed.get("dex").is_none());
+
+        // With dex
+        let req_with_dex = super::InfoRequest::MetaAndAssetCtxs {
+            dex: Some("xyz".to_string()),
+        };
+        let json2 = serde_json::to_string(&req_with_dex).unwrap();
+        let parsed2: serde_json::Value = serde_json::from_str(&json2).unwrap();
+        assert_eq!(parsed2["type"], "metaAndAssetCtxs");
+        assert_eq!(parsed2["dex"], "xyz");
     }
 
     #[test]

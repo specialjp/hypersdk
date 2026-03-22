@@ -89,6 +89,8 @@ pub enum Action {
     ConvertToMultiSigUser(ConvertToMultiSigUser),
     /// Update isolated margin.
     UpdateIsolatedMargin(UpdateIsolatedMargin),
+    /// Update leverage.
+    UpdateLeverage(UpdateLeverage),
     /// Deposit or withdraw from a vault.
     VaultTransfer(VaultTransfer),
     /// Multi-sig action.
@@ -194,6 +196,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
@@ -285,6 +288,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
@@ -374,6 +378,7 @@ impl Action {
             | Action::ScheduleCancel(_)
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
+            | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
             | Action::Noop => {
                 let expires_after =
@@ -666,6 +671,18 @@ pub struct UpdateIsolatedMargin {
     pub ntli: u64,
 }
 
+/// Request to update leverage.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateLeverage {
+    /// Asset index.
+    pub asset: usize,
+    /// `true` for cross margin, `false` for isolated margin.
+    pub is_cross: bool,
+    /// Leverage value.
+    pub leverage: u32,
+}
+
 /// Deposit or withdraw USDC from a vault.
 ///
 /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#vault-transfer>
@@ -867,6 +884,22 @@ mod tests {
             address,
             address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431")
         );
+    }
+
+    #[test]
+    fn update_leverage_serialization() {
+        let action = Action::UpdateLeverage(UpdateLeverage {
+            asset: 3,
+            is_cross: true,
+            leverage: 20,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "updateLeverage");
+        assert_eq!(parsed["asset"], 3);
+        assert_eq!(parsed["isCross"], true);
+        assert_eq!(parsed["leverage"], 20);
     }
 
     #[test]

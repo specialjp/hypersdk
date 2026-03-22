@@ -1,5 +1,6 @@
 mod account;
 mod balances;
+mod leverage;
 mod markets;
 mod morpho;
 mod multisig;
@@ -14,6 +15,7 @@ use account::AccountCmd;
 use balances::BalanceCmd;
 use clap::{Args, Parser};
 use hypersdk::hypercore::Chain;
+use leverage::LeverageCmd;
 use markets::{DexesCmd, PerpsCmd, SpotCmd};
 use morpho::{MorphoApyCmd, MorphoPositionCmd, MorphoVaultApyCmd};
 use multisig::MultiSigCmd;
@@ -46,6 +48,8 @@ enum Command {
     Balance(BalanceCmd),
     /// List HIP-3 DEXes
     Dexes(DexesCmd),
+    /// Update leverage for a perpetual position
+    Leverage(LeverageCmd),
     /// List perpetual markets
     Perps(PerpsCmd),
     /// List spot markets
@@ -80,6 +84,7 @@ impl Command {
             Self::Account(cmd) => cmd.run().await,
             Self::Balance(cmd) => cmd.run().await,
             Self::Dexes(cmd) => cmd.run().await,
+            Self::Leverage(cmd) => cmd.run().await,
             Self::Perps(cmd) => cmd.run().await,
             Self::Spot(cmd) => cmd.run().await,
             Self::MorphoPosition(cmd) => cmd.run().await,

@@ -275,6 +275,15 @@ impl Client {
         super::perp_dexs(self.base_url.clone(), self.http_client.clone()).await
     }
 
+    /// Fetches metadata and asset contexts including stats like open interest and volume.
+    #[inline(always)]
+    pub async fn meta_and_asset_ctxs(
+        &self,
+        dex: Option<Dex>,
+    ) -> Result<(crate::hypercore::PerpTokens, Vec<crate::hypercore::types::AssetCtx>)> {
+        super::perp_meta_and_asset_ctxs(self.base_url.clone(), self.http_client.clone(), dex).await
+    }
+
     /// Fetches all available spot markets.
     ///
     /// # Example
@@ -1627,6 +1636,40 @@ impl Client {
         }
     }
 
+    /// Update leverage for an asset.
+    pub async fn update_leverage<S: SignerSync>(
+        &self,
+        signer: &S,
+        asset: usize,
+        is_cross: bool,
+        leverage: u32,
+        nonce: u64,
+        vault_address: Option<Address>,
+        expires_after: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let resp = self
+            .sign_and_send_sync(
+                signer,
+                Action::UpdateLeverage(crate::hypercore::types::api::UpdateLeverage {
+                    asset,
+                    is_cross,
+                    leverage,
+                }),
+                nonce,
+                vault_address,
+                expires_after,
+            )
+            .await?;
+
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => {
+                anyhow::bail!("update_leverage: {err}")
+            }
+            _ => anyhow::bail!("update_leverage: unexpected response type: {resp:?}"),
+        }
+    }
+
     /// Executes a multisig action on Hyperliquid.
     ///
     /// This method allows multiple signers to authorize a single action (such as placing orders,
@@ -1968,6 +2011,7 @@ where
     /// let batch = BatchOrder {
     ///     orders: vec![order],
     ///     grouping: OrderGrouping::Na,
+///     builder: None,
     /// };
     ///
     /// let statuses = client

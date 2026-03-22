@@ -1250,7 +1250,17 @@ async fn raw_spot_markets(
     let mut url = core_url.into_url()?;
     url.set_path("/info");
     let resp = client.post(url).json(&InfoRequest::SpotMeta).send().await?;
-    Ok(resp.json().await?)
+    
+    let text = resp.text().await?;
+    match serde_json::from_str::<SpotTokens>(&text) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            log::error!("Failed to deserialize SpotTokens: {}", e);
+            // Print first 1000 chars of error context if possible
+            log::error!("Raw JSON (start): {:.1000}", text);
+            Err(e.into())
+        }
+    }
 }
 
 /// Fetches all available spot tokens from HyperCore.
@@ -1383,6 +1393,11 @@ pub async fn perp_dexs(
             dex.map(|dex| Dex {
                 name: dex.name,
                 index,
+                assets: dex
+                    .asset_to_streaming_oi_cap
+                    .iter()
+                    .map(|v| v[0].clone())
+                    .collect(),
                 deployer_fee_scale: dex.deployer_fee_scale,
             })
         })
@@ -1395,6 +1410,7 @@ pub async fn perp_dexs(
 #[serde(rename_all = "camelCase")]
 struct PerpDex {
     name: String,
+    asset_to_streaming_oi_cap: Vec<Vec<String>>,
     #[serde(default, with = "rust_decimal::serde::str_option")]
     deployer_fee_scale: Option<Decimal>,
 }
@@ -1451,6 +1467,28 @@ pub async fn perp_markets(
         .collect();
 
     Ok(perps)
+}
+
+/// Fetches metadata and asset contexts (including stats like open interest and volume) for perpetual markets.
+pub async fn perp_meta_and_asset_ctxs(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+    dex: Option<Dex>,
+) -> anyhow::Result<(PerpTokens, Vec<types::AssetCtx>)> {
+    let mut url = core_url.into_url()?;
+    url.set_path("/info");
+
+    let resp = client
+        .post(url)
+        .json(&types::InfoRequest::MetaAndAssetCtxs {
+            dex: dex.as_ref().map(|dex| dex.name.clone()),
+        })
+        .send()
+        .await
+        .context("metaAndAssetCtxs")?;
+
+    let data: types::MetaAndAssetCtxsResponse = resp.json().await?;
+    Ok((data.0, data.1))
 }
 
 /// Fetches outcome market metadata from HyperCore.
@@ -1550,26 +1588,26 @@ fn generate_evm_transfer_address(index: usize) -> Address {
     Address::from_slice(&bytes[12..]) // Take last 20 bytes for Address
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-struct PerpTokens {
-    universe: Vec<PerpUniverseItem>,
-    collateral_token: usize,
+pub struct PerpTokens {
+    pub universe: Vec<PerpUniverseItem>,
+    pub collateral_token: usize,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
-struct PerpUniverseItem {
-    name: String,
-    max_leverage: u64,
+pub struct PerpUniverseItem {
+    pub name: String,
+    pub max_leverage: u64,
     #[serde(default)]
-    only_isolated: bool,
-    margin_mode: Option<MarginMode>,
-    sz_decimals: i64,
+    pub only_isolated: bool,
+    pub margin_mode: Option<MarginMode>,
+    pub sz_decimals: i64,
     #[serde(default, deserialize_with = "deserialize_growth_mode")]
-    growth_mode: bool,
+    pub growth_mode: bool,
     #[serde(default, alias = "isAlignedQuoteToken", alias = "isQuoteTokenAligned")]
-    aligned_quote_token: bool,
+    pub aligned_quote_token: bool,
     // margin_table_id: u64,
 }
 
