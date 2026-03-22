@@ -1890,6 +1890,7 @@ where
     /// let batch = BatchOrder {
     ///     orders: vec![order],
     ///     grouping: OrderGrouping::Na,
+///     builder: None,
     /// };
     ///
     /// let statuses = client

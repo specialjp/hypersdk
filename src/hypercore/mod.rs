@@ -1199,7 +1199,17 @@ async fn raw_spot_markets(
     let mut url = core_url.into_url()?;
     url.set_path("/info");
     let resp = client.post(url).json(&InfoRequest::SpotMeta).send().await?;
-    Ok(resp.json().await?)
+    
+    let text = resp.text().await?;
+    match serde_json::from_str::<SpotTokens>(&text) {
+        Ok(v) => Ok(v),
+        Err(e) => {
+            log::error!("Failed to deserialize SpotTokens: {}", e);
+            // Print first 1000 chars of error context if possible
+            log::error!("Raw JSON (start): {:.1000}", text);
+            Err(e.into())
+        }
+    }
 }
 
 /// Fetches all available spot tokens from HyperCore.

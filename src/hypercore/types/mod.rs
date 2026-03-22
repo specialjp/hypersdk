@@ -1662,13 +1662,46 @@ impl OrderResponseStatus {
 ///         }
 ///     ],
 ///     grouping: OrderGrouping::Na,
+///     builder: None,
 /// };
 /// ```
+/// Builder fee configuration for DeFi builder codes.
+///
+/// When included in a [`BatchOrder`], the builder receives a fee on each fill.
+/// The user must have previously approved the builder fee via `ApproveBuilderFee`.
+///
+/// # Fields
+///
+/// - `b` – The builder's Ethereum address (lowercase hex).
+/// - `f` – Fee in **tenths of a basis point** (e.g., `10` = 1bp = 0.01%).
+///   Max: 100 for perps (0.1%), 1000 for spot (1%).
+///
+/// # Example
+///
+/// ```rust
+/// use hypersdk::hypercore::types::Builder;
+///
+/// let builder = Builder {
+///     b: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+///     f: 10, // 1 basis point = 0.01%
+/// };
+/// ```
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct Builder {
+    /// Builder address (lowercase hex with 0x prefix).
+    pub b: String,
+    /// Fee in tenths of a basis point.
+    pub f: u32,
+}
+
 #[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct BatchOrder {
     pub orders: Vec<OrderRequest>,
     pub grouping: OrderGrouping,
+    /// Optional builder fee. When set, each fill generates a fee for the builder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub builder: Option<Builder>,
 }
 
 /// Order grouping strategy.
