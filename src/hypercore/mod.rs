@@ -563,6 +563,30 @@ pub struct PriceTick {
 }
 
 impl PriceTick {
+    /// Creates a price tick configuration for a spot market.
+    ///
+    /// For spot markets, max decimal places is 8.
+    /// Uses: max_decimals = 8 - sz_decimals
+    ///
+    /// See: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size>
+    pub fn for_spot(sz_decimals: i64) -> Self {
+        Self {
+            max_decimals: 8 - sz_decimals,
+        }
+    }
+
+    /// Creates a price tick configuration for a perpetual market.
+    ///
+    /// For perps, the max significant figures is 5 and max decimal places is 6.
+    /// Uses: max_decimals = 6 - sz_decimals
+    ///
+    /// See: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size>
+    pub fn for_perp(sz_decimals: i64) -> Self {
+        Self {
+            max_decimals: 6 - sz_decimals,
+        }
+    }
+
     /// Returns the valid tick size for a given price.
     ///
     /// The tick size determines the minimum price increment for orders at this price level.
@@ -675,25 +699,6 @@ impl PriceTick {
     }
 }
 
-/// Creates a price tick configuration for a spot market.
-///
-/// See: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size>
-fn build_price_ticks(sz_decimals: i64) -> PriceTick {
-    let max_decimals = 8 - sz_decimals;
-    PriceTick { max_decimals }
-}
-
-/// Creates a price tick configuration for a perpetual market.
-///
-/// For perps, the max significant figures is 5 and max decimal places is 6.
-/// This function uses: max_decimals = 6 - sz_decimals (as a construction parameter)
-///
-/// See: <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/tick-and-lot-size>
-fn build_perp_price_ticks(sz_decimals: i64) -> PriceTick {
-    let max_decimals = 6 - sz_decimals;
-    PriceTick { max_decimals }
-}
-
 /// Perpetual futures contract market.
 ///
 /// Represents a perpetual (non-expiring) futures contract on Hyperliquid.
@@ -733,6 +738,8 @@ pub struct PerpMarket {
     pub margin_mode: Option<MarginMode>,
     /// Whether growth mode is enabled for this market
     pub growth_mode: bool,
+    /// Whether the quote token is aligned for this market
+    pub aligned_quote_token: bool,
     /// Price tick configuration for valid price increments
     pub table: PriceTick,
 }
@@ -979,7 +986,7 @@ mod tick_tests {
         ];
 
         for (sz_decimals, price, expected_tick, expected_price) in prices {
-            let table = build_perp_price_ticks(sz_decimals);
+            let table = PriceTick::for_perp(sz_decimals);
             let tick = table.tick_for(price);
             assert_eq!(
                 tick,
@@ -1013,7 +1020,7 @@ mod tick_tests {
         ];
 
         for (sz_decimals, price, expected_tick, expected_price) in prices {
-            let table = build_price_ticks(sz_decimals);
+            let table = PriceTick::for_spot(sz_decimals);
             let tick = table.tick_for(price);
             assert_eq!(
                 tick,
@@ -1192,6 +1199,50 @@ impl fmt::Display for SpotToken {
     }
 }
 
+/// One side of an outcome market.
+#[derive(Debug, Clone)]
+pub struct OutcomeSideSpec {
+    /// Side name (e.g., "Yes", "No")
+    pub name: String,
+}
+
+/// Outcome market.
+#[derive(Debug, Clone)]
+pub struct OutcomeInfo {
+    /// Outcome ID
+    pub outcome: u32,
+    /// Market name (e.g., "Recurring")
+    pub name: String,
+    /// Market description or structured parameters
+    pub description: String,
+    /// The two sides of this outcome
+    pub side_specs: Vec<OutcomeSideSpec>,
+}
+
+/// Groups multiple outcomes into a question.
+#[derive(Debug, Clone)]
+pub struct OutcomeQuestion {
+    /// Question ID
+    pub question: u32,
+    /// Question name
+    pub name: String,
+    /// Question description
+    pub description: String,
+    /// Fallback outcome if no named outcome wins
+    pub fallback_outcome: Option<u32>,
+    /// Outcome IDs in this question
+    pub named_outcomes: Vec<u32>,
+    /// Already settled outcome IDs
+    pub settled_named_outcomes: Vec<u32>,
+}
+
+/// Outcome market metadata from the `outcomeMeta` info endpoint.
+#[derive(Debug, Clone)]
+pub struct OutcomeMeta {
+    pub outcomes: Vec<OutcomeInfo>,
+    pub questions: Vec<OutcomeQuestion>,
+}
+
 async fn raw_spot_markets(
     core_url: impl IntoUrl,
     client: reqwest::Client,
@@ -1276,18 +1327,18 @@ pub async fn spot_markets(
             .iter()
             .enumerate()
             .find(|(index, _)| *index as u32 == item.tokens[0])
-            .expect("base");
+            .context("base token index not found")?;
         let (_, quote) = spot_tokens
             .iter()
             .enumerate()
             .find(|(index, _)| *index as u32 == item.tokens[1])
-            .expect("quote");
+            .context("quote token index not found")?;
 
         markets.push(SpotMarket {
             name: item.name,
             index: 10_000 + item.index,
             tokens: [base.clone(), quote.clone()],
-            table: build_price_ticks(base.sz_decimals),
+            table: PriceTick::for_spot(base.sz_decimals),
         });
     }
 
@@ -1347,6 +1398,7 @@ pub async fn perp_dexs(
                     .iter()
                     .map(|v| v[0].clone())
                     .collect(),
+                deployer_fee_scale: dex.deployer_fee_scale,
             })
         })
         .collect();
@@ -1359,6 +1411,8 @@ pub async fn perp_dexs(
 struct PerpDex {
     name: String,
     asset_to_streaming_oi_cap: Vec<Vec<String>>,
+    #[serde(default, with = "rust_decimal::serde::str_option")]
+    deployer_fee_scale: Option<Decimal>,
 }
 
 /// Fetches all available perpetual futures markets from HyperCore.
@@ -1374,7 +1428,6 @@ pub async fn perp_markets(
 
     // get it to gather the collateral token
     let spot = raw_spot_markets(url.clone(), client.clone()).await?;
-
     let resp = client
         .post(url)
         .json(&InfoRequest::Meta {
@@ -1384,7 +1437,10 @@ pub async fn perp_markets(
         .await
         .context("meta")?;
     let data: PerpTokens = resp.json().await?;
-    let collateral = &spot.tokens[data.collateral_token];
+    let collateral = spot
+        .tokens
+        .get(data.collateral_token)
+        .context("collateral token index out of bounds")?;
     let collateral = SpotToken::from(collateral.clone());
     let dex_index = dex.as_ref().map(|dex| dex.index).unwrap_or_default();
 
@@ -1404,7 +1460,8 @@ pub async fn perp_markets(
                 isolated_margin: perp.only_isolated,
                 margin_mode: perp.margin_mode,
                 growth_mode: perp.growth_mode,
-                table: build_perp_price_ticks(perp.sz_decimals),
+                aligned_quote_token: perp.aligned_quote_token,
+                table: PriceTick::for_perp(perp.sz_decimals),
             }
         })
         .collect();
@@ -1432,6 +1489,90 @@ pub async fn perp_meta_and_asset_ctxs(
 
     let data: types::MetaAndAssetCtxsResponse = resp.json().await?;
     Ok((data.0, data.1))
+}
+
+/// Fetches outcome market metadata from HyperCore.
+pub async fn outcome_meta(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+) -> anyhow::Result<OutcomeMeta> {
+    let mut url = core_url.into_url()?;
+    url.set_path("/info");
+
+    let resp = client
+        .post(url)
+        .json(&InfoRequest::OutcomeMeta)
+        .send()
+        .await
+        .context("info")?;
+
+    let raw: RawOutcomeMeta = resp.json().await?;
+
+    Ok(OutcomeMeta {
+        outcomes: raw
+            .outcomes
+            .into_iter()
+            .map(|o| OutcomeInfo {
+                outcome: o.outcome,
+                name: o.name,
+                description: o.description,
+                side_specs: o
+                    .side_specs
+                    .into_iter()
+                    .map(|s| OutcomeSideSpec { name: s.name })
+                    .collect(),
+            })
+            .collect(),
+        questions: raw
+            .questions
+            .into_iter()
+            .map(|q| OutcomeQuestion {
+                question: q.question,
+                name: q.name,
+                description: q.description,
+                fallback_outcome: q.fallback_outcome,
+                named_outcomes: q.named_outcomes,
+                settled_named_outcomes: q.settled_named_outcomes,
+            })
+            .collect(),
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeMeta {
+    #[serde(default)]
+    outcomes: Vec<RawOutcomeInfo>,
+    #[serde(default)]
+    questions: Vec<RawOutcomeQuestion>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeInfo {
+    outcome: u32,
+    name: String,
+    description: String,
+    side_specs: Vec<RawOutcomeSideSpec>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeSideSpec {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawOutcomeQuestion {
+    question: u32,
+    name: String,
+    description: String,
+    fallback_outcome: Option<u32>,
+    #[serde(default)]
+    named_outcomes: Vec<u32>,
+    #[serde(default)]
+    settled_named_outcomes: Vec<u32>,
 }
 
 /// Generates an EVM transfer address for cross-chain transfers.
@@ -1465,6 +1606,8 @@ pub struct PerpUniverseItem {
     pub sz_decimals: i64,
     #[serde(default, deserialize_with = "deserialize_growth_mode")]
     pub growth_mode: bool,
+    #[serde(default, alias = "isAlignedQuoteToken", alias = "isQuoteTokenAligned")]
+    pub aligned_quote_token: bool,
     // margin_table_id: u64,
 }
 
@@ -1649,6 +1792,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_http_user_fees() {
+        let client = hypercore::mainnet();
+        let user = address!("0xdfc24b077bc1425ad1dea75bcb6f8158e10df303");
+        // Smoke test: endpoint should deserialize successfully.
+        let _fees = client.user_fees(user).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn test_http_all_mids() {
         let client = hypercore::mainnet();
         let mids = client.all_mids(None).await.unwrap();
@@ -1786,5 +1937,74 @@ mod tests {
             duplicates.len(),
             &duplicates[..duplicates.len().min(10)]
         );
+    }
+
+    #[tokio::test]
+    async fn test_http_outcome_meta_mainnet() {
+        let client = hypercore::mainnet();
+        let meta = client.outcome_meta().await.unwrap();
+        // Mainnet may have empty outcomes — just verify the call succeeds
+        let _ = meta.outcomes.len();
+    }
+
+    #[tokio::test]
+    async fn test_http_outcome_meta_testnet() {
+        let client = hypercore::testnet();
+        let meta = client.outcome_meta().await.unwrap();
+        // Testnet should have outcome markets
+        assert!(!meta.outcomes.is_empty());
+        // Each outcome should have exactly 2 sides
+        for o in &meta.outcomes {
+            assert_eq!(o.side_specs.len(), 2, "outcome {} should have 2 sides", o.outcome);
+        }
+    }
+
+    #[test]
+    fn outcome_meta_deserialize() {
+        let json = r#"{
+            "outcomes": [
+                {
+                    "outcome": 1273,
+                    "name": "Recurring",
+                    "description": "class:priceBinary|underlying:BTC|expiry:20260317-0300|targetPrice:74212|period:1d",
+                    "sideSpecs": [{"name": "Yes"}, {"name": "No"}]
+                },
+                {
+                    "outcome": 9,
+                    "name": "Who will win the HL 100 meter dash?",
+                    "description": "This race is yet to be scheduled.",
+                    "sideSpecs": [{"name": "Hypurr"}, {"name": "Usain Bolt"}]
+                }
+            ],
+            "questions": [
+                {
+                    "question": 1,
+                    "name": "What will Hypurr eat?",
+                    "description": "Food journal.",
+                    "fallbackOutcome": 13,
+                    "namedOutcomes": [10, 11, 12],
+                    "settledNamedOutcomes": []
+                }
+            ]
+        }"#;
+        let meta: RawOutcomeMeta = serde_json::from_str(json).unwrap();
+        assert_eq!(meta.outcomes.len(), 2);
+        assert_eq!(meta.outcomes[0].outcome, 1273);
+        assert_eq!(meta.outcomes[0].name, "Recurring");
+        assert_eq!(meta.outcomes[0].side_specs.len(), 2);
+        assert_eq!(meta.outcomes[0].side_specs[0].name, "Yes");
+        assert_eq!(meta.outcomes[1].side_specs[1].name, "Usain Bolt");
+        assert_eq!(meta.questions.len(), 1);
+        assert_eq!(meta.questions[0].question, 1);
+        assert_eq!(meta.questions[0].fallback_outcome, Some(13));
+        assert_eq!(meta.questions[0].named_outcomes, vec![10, 11, 12]);
+    }
+
+    #[test]
+    fn outcome_meta_empty() {
+        let json = r#"{"outcomes": [], "questions": []}"#;
+        let meta: RawOutcomeMeta = serde_json::from_str(json).unwrap();
+        assert!(meta.outcomes.is_empty());
+        assert!(meta.questions.is_empty());
     }
 }

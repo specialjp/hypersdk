@@ -13,6 +13,7 @@ use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
+use super::solidity;
 use crate::hypercore::{
     Chain,
     types::{
@@ -21,8 +22,6 @@ use crate::hypercore::{
     },
     utils::{self, get_typed_data},
 };
-
-use super::solidity;
 
 /// Request for an action.
 ///
@@ -92,6 +91,8 @@ pub enum Action {
     UpdateIsolatedMargin(UpdateIsolatedMargin),
     /// Update leverage.
     UpdateLeverage(UpdateLeverage),
+    /// Deposit or withdraw from a vault.
+    VaultTransfer(VaultTransfer),
     /// Multi-sig action.
     MultiSig(MultiSigAction),
     /// Invalidate a request.
@@ -196,6 +197,7 @@ impl Action {
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
+            | Action::VaultTransfer(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
@@ -287,6 +289,7 @@ impl Action {
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
+            | Action::VaultTransfer(_)
             | Action::Noop => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
@@ -376,6 +379,7 @@ impl Action {
             | Action::EvmUserModify { .. }
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
+            | Action::VaultTransfer(_)
             | Action::Noop => {
                 let expires_after =
                     maybe_expires_after.map(|after| after.timestamp_millis() as u64);
@@ -679,6 +683,24 @@ pub struct UpdateLeverage {
     pub leverage: u32,
 }
 
+/// Deposit or withdraw USDC from a vault.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#vault-transfer>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultTransfer {
+    /// The vault address to deposit into or withdraw from.
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub vault_address: Address,
+    /// `true` for deposit, `false` for withdrawal.
+    pub is_deposit: bool,
+    /// Amount of USDC in micro-units (1 USD = 1,000,000).
+    pub usd: u64,
+}
+
 /// Multi-signature action payload.
 ///
 /// Contains the multisig user address, outer signer, and the inner action to execute.
@@ -878,5 +900,31 @@ mod tests {
         assert_eq!(parsed["asset"], 3);
         assert_eq!(parsed["isCross"], true);
         assert_eq!(parsed["leverage"], 20);
+    }
+
+    #[test]
+    fn vault_transfer_serialization() {
+        use alloy::primitives::address;
+
+        let action = Action::VaultTransfer(VaultTransfer {
+            vault_address: address!("dfc24b077bc1425ad1dea75bcb6f8158e10df303"),
+            is_deposit: true,
+            usd: 100_500_000, // 100.5 USDC in micro-units
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"vaultTransfer\""));
+        assert!(json.contains("\"vaultAddress\":\"0xdfc24b077bc1425ad1dea75bcb6f8158e10df303\""));
+        assert!(json.contains("\"isDeposit\":true"));
+        assert!(json.contains("\"usd\":100500000"));
+
+        // Round-trip
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        if let Action::VaultTransfer(vt) = deserialized {
+            assert!(vt.is_deposit);
+            assert_eq!(vt.usd, 100_500_000);
+        } else {
+            panic!("wrong variant");
+        }
     }
 }

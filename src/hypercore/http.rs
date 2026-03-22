@@ -48,25 +48,26 @@ use alloy::{
     primitives::Address,
     signers::{Signer, SignerSync},
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
 use serde::Deserialize;
 use url::Url;
 
 use super::{AssetTarget, signing::*};
 use crate::hypercore::{
     ActionError, ApiAgent, CandleInterval, Chain, Cloid, Dex, MultiSigConfig, OidOrCloid,
-    PerpMarket, Signature, SpotMarket, SpotToken,
+    OutcomeMeta, PerpMarket, Signature, SpotMarket, SpotToken,
     api::{
         Action, ActionRequest, ApproveAgent, ConvertToMultiSigUser, OkResponse, Response,
-        SignersConfig,
+        SignersConfig, VaultTransfer,
     },
     mainnet_url, testnet_url,
     types::{
         BasicOrder, BatchCancel, BatchCancelCloid, BatchModify, BatchOrder, ClearinghouseState,
         Fill, FundingRate, InfoRequest, OrderResponseStatus, OrderUpdate, ScheduleCancel,
-        SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance, UserRole,
+        SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance, UserFees, UserRole,
         UserVaultEquity, VaultDetails,
     },
 };
@@ -149,6 +150,11 @@ impl Client {
     /// ```
     pub fn with_url(self, base_url: Url) -> Self {
         Self { base_url, ..self }
+    }
+
+    #[must_use]
+    pub fn with_http_client(self, http_client: reqwest::Client) -> Self {
+        Self { http_client, ..self }
     }
 
     /// Returns the chain this client is configured for.
@@ -322,6 +328,24 @@ impl Client {
         super::spot_tokens(self.base_url.clone(), self.http_client.clone()).await
     }
 
+    /// Fetches outcome market metadata.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::testnet();
+    /// let meta = client.outcome_meta().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    #[inline(always)]
+    pub async fn outcome_meta(&self) -> Result<OutcomeMeta> {
+        super::outcome_meta(self.base_url.clone(), self.http_client.clone()).await
+    }
+
     /// Returns all open orders for a user.
     ///
     /// # Example
@@ -433,12 +457,38 @@ impl Client {
         Ok(data)
     }
 
+    /// Returns the user's fills by time.
+    pub async fn user_fills_by_time(
+        &self,
+        user: Address,
+        start_time: u64,
+        end_time: Option<u64>,
+    ) -> Result<Vec<Fill>> {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let data = self
+            .http_client
+            .post(api_url)
+            .json(&InfoRequest::UserFillsByTime {
+                user,
+                start_time,
+                end_time,
+            })
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(data)
+    }
+
     /// Returns the status of an order.
     pub async fn order_status(
         &self,
         user: Address,
         oid: OidOrCloid,
-    ) -> Result<Option<OrderUpdate>> {
+    ) -> Result<Option<OrderUpdate<BasicOrder>>> {
         let mut api_url = self.base_url.clone();
         api_url.set_path("/info");
 
@@ -446,7 +496,7 @@ impl Client {
         #[serde(rename_all = "camelCase")]
         #[serde(tag = "status")]
         enum Response {
-            Order { order: OrderUpdate },
+            Order { order: OrderUpdate<BasicOrder> },
             UnknownOid,
         }
 
@@ -576,6 +626,45 @@ impl Client {
             .await?;
 
         Ok(data.balances)
+    }
+
+    /// Retrieves user-specific fee rates.
+    ///
+    /// Returns effective maker and taker rates plus the active referral discount.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    /// use hypersdk::Address;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::mainnet();
+    /// let user: Address = "0x...".parse()?;
+    /// let fees = client.user_fees(user).await?;
+    ///
+    /// println!("maker={} taker={} referral_discount={}",
+    ///     fees.maker_rate,
+    ///     fees.taker_rate,
+    ///     fees.referral_discount
+    /// );
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn user_fees(&self, user: Address) -> Result<UserFees> {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let data = self
+            .http_client
+            .post(api_url)
+            .json(&InfoRequest::UserFees { user })
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        Ok(data)
     }
 
     /// Retrieves the clearinghouse state for a user's perpetual positions.
@@ -1411,6 +1500,39 @@ impl Client {
         }
     }
 
+    /// Deposit or withdraw USDC from a vault.
+    ///
+    /// # Parameters
+    ///
+    /// - `signer`: The signer for signing the action
+    /// - `vault_address`: The vault to deposit into or withdraw from
+    /// - `usd`: Amount of USDC (e.g. `dec!(100.5)` for $100.50; converted internally to micro-units)
+    /// - `nonce`: Unique nonce (typically current timestamp in milliseconds)
+    /// - `is_deposit`: `true` to deposit, `false` to withdraw
+    ///
+    /// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#vault-transfer>
+    pub async fn vault_transfer<S: SignerSync>(
+        &self,
+        signer: &S,
+        vault_address: Address,
+        usd: Decimal,
+        nonce: u64,
+        is_deposit: bool,
+    ) -> Result<()> {
+        let usd_raw = (usd * rust_decimal::Decimal::from(1_000_000))
+            .to_u64()
+            .ok_or_else(|| anyhow::anyhow!("vault_transfer: usd amount out of range: {usd}"))?;
+        let action = VaultTransfer { vault_address, is_deposit, usd: usd_raw };
+        let resp = self
+            .sign_and_send_sync(signer, action, nonce, None, None)
+            .await?;
+        match resp {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => anyhow::bail!("vault_transfer: {err}"),
+            _ => anyhow::bail!("vault_transfer: unexpected response type: {resp:?}"),
+        }
+    }
+
     /// Send USDC to another address.
     ///
     /// Spot <> DEX or Subaccount.
@@ -1635,20 +1757,19 @@ impl Client {
 
         async move {
             let req = res?;
-            let res = http_client
-                .post(url)
-                .timeout(Duration::from_secs(5))
-                // .header(header::CONTENT_TYPE, "application/json")
-                // .body(text)
-                .json(&req)
-                .send()
-                .await?
-                .json()
-                // .text()
-                .await?;
-            // println!("<< {res}");
-            // Ok(serde_json::from_str(&res).unwrap())
-            Ok(res)
+            let res = http_client.post(url).json(&req).send().await?;
+
+            let status = res.status();
+            let text = res.text().await?;
+
+            if !status.is_success() {
+                return Err(anyhow!("HTTP {status} body={text}"));
+            }
+
+            let parsed = serde_json::from_str(&text)
+                .map_err(|e| anyhow!("decode failed: {e}; body={text}"))?;
+
+            Ok(parsed)
         }
     }
 
