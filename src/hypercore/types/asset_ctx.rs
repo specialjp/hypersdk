@@ -19,6 +19,19 @@ pub struct AssetCtx {
 #[derive(Debug, Clone, Deserialize)]
 pub struct MetaAndAssetCtxsResponse(pub(crate) crate::hypercore::PerpTokens, pub Vec<AssetCtx>);
 
+/// Asset context for spot markets returned by `spotMetaAndAssetCtxs`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpotAssetCtx {
+    pub day_ntl_vlm: Decimal,
+    pub mark_px: Decimal,
+    pub mid_px: Option<Decimal>,
+    pub prev_day_px: Decimal,
+    pub circulating_supply: Option<Decimal>,
+    pub coin: String,
+    pub total_supply: Option<Decimal>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

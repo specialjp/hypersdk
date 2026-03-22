@@ -1252,11 +1252,13 @@ async fn raw_spot_markets(
     let resp = client.post(url).json(&InfoRequest::SpotMeta).send().await?;
     
     let text = resp.text().await?;
+    if text.trim() == "null" {
+        anyhow::bail!("spotMeta returned null (API may be temporarily unavailable)");
+    }
     match serde_json::from_str::<SpotTokens>(&text) {
         Ok(v) => Ok(v),
         Err(e) => {
             log::error!("Failed to deserialize SpotTokens: {}", e);
-            // Print first 1000 chars of error context if possible
             log::error!("Raw JSON (start): {:.1000}", text);
             Err(e.into())
         }
@@ -1487,8 +1489,37 @@ pub async fn perp_meta_and_asset_ctxs(
         .await
         .context("metaAndAssetCtxs")?;
 
-    let data: types::MetaAndAssetCtxsResponse = resp.json().await?;
+    let text = resp.text().await.context("metaAndAssetCtxs read body")?;
+    if text.trim() == "null" {
+        anyhow::bail!("metaAndAssetCtxs returned null (API may be temporarily unavailable)");
+    }
+    let data: types::MetaAndAssetCtxsResponse =
+        serde_json::from_str(&text).context("metaAndAssetCtxs deserialize")?;
     Ok((data.0, data.1))
+}
+
+/// Fetches spot metadata with asset contexts (volume, prices) via `spotMetaAndAssetCtxs`.
+pub async fn spot_meta_and_asset_ctxs(
+    core_url: impl IntoUrl,
+    client: reqwest::Client,
+) -> anyhow::Result<(SpotTokens, Vec<types::SpotAssetCtx>)> {
+    let mut url = core_url.into_url()?;
+    url.set_path("/info");
+
+    let resp = client
+        .post(url)
+        .json(&types::InfoRequest::SpotMetaAndAssetCtxs)
+        .send()
+        .await
+        .context("spotMetaAndAssetCtxs")?;
+
+    let text = resp.text().await.context("spotMetaAndAssetCtxs read body")?;
+    if text.trim() == "null" {
+        anyhow::bail!("spotMetaAndAssetCtxs returned null (API may be temporarily unavailable)");
+    }
+    let data: (SpotTokens, Vec<types::SpotAssetCtx>) =
+        serde_json::from_str(&text).context("spotMetaAndAssetCtxs deserialize")?;
+    Ok(data)
 }
 
 /// Fetches outcome market metadata from HyperCore.
@@ -1635,29 +1666,28 @@ pub enum MarginMode {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SpotTokens {
-    universe: Vec<SpotUniverseItem>,
-    tokens: Vec<Token>,
+pub struct SpotTokens {
+    pub universe: Vec<SpotUniverseItem>,
+    pub tokens: Vec<Token>,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SpotUniverseItem {
-    // base and quote
-    tokens: [u32; 2],
-    name: String,
-    index: usize,
+pub struct SpotUniverseItem {
+    pub tokens: [u32; 2],
+    pub name: String,
+    pub index: usize,
 }
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct Token {
-    name: String,
-    index: usize,
-    token_id: B128,
-    sz_decimals: i64,
-    wei_decimals: i64,
-    evm_contract: Option<EvmContract>,
+pub struct Token {
+    pub name: String,
+    pub index: usize,
+    pub token_id: B128,
+    pub sz_decimals: i64,
+    pub wei_decimals: i64,
+    pub evm_contract: Option<EvmContract>,
 }
 
 impl From<Token> for SpotToken {
@@ -1704,9 +1734,9 @@ impl From<Token> for SpotToken {
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct EvmContract {
-    address: Address,
-    evm_extra_wei_decimals: i64,
+pub struct EvmContract {
+    pub address: Address,
+    pub evm_extra_wei_decimals: i64,
 }
 
 #[cfg(test)]

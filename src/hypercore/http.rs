@@ -284,6 +284,14 @@ impl Client {
         super::perp_meta_and_asset_ctxs(self.base_url.clone(), self.http_client.clone(), dex).await
     }
 
+    /// Fetches spot metadata with asset contexts (volume, prices).
+    #[inline(always)]
+    pub async fn spot_meta_and_asset_ctxs(
+        &self,
+    ) -> Result<(crate::hypercore::SpotTokens, Vec<crate::hypercore::types::SpotAssetCtx>)> {
+        super::spot_meta_and_asset_ctxs(self.base_url.clone(), self.http_client.clone()).await
+    }
+
     /// Fetches all available spot markets.
     ///
     /// # Example

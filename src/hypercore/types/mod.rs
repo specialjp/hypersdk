@@ -86,7 +86,7 @@ use crate::hypercore::{Chain, Cloid, OidOrCloid, SpotToken};
 
 pub mod api;
 pub mod asset_ctx;
-pub use asset_ctx::{AssetCtx, MetaAndAssetCtxsResponse};
+pub use asset_ctx::{AssetCtx, MetaAndAssetCtxsResponse, SpotAssetCtx};
 pub(super) mod solidity;
 
 // Re-export important raw types for convenience
@@ -3130,6 +3130,7 @@ pub(super) enum InfoRequest {
         dex: Option<String>,
     },
     SpotMeta,
+    SpotMetaAndAssetCtxs,
     PerpDexs,
     FrontendOpenOrders {
         user: Address,
