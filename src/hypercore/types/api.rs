@@ -863,4 +863,20 @@ mod tests {
             address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431")
         );
     }
+
+    #[test]
+    fn update_leverage_serialization() {
+        let action = Action::UpdateLeverage(UpdateLeverage {
+            asset: 3,
+            is_cross: true,
+            leverage: 20,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "updateLeverage");
+        assert_eq!(parsed["asset"], 3);
+        assert_eq!(parsed["isCross"], true);
+        assert_eq!(parsed["leverage"], 20);
+    }
 }
