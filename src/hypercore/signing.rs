@@ -325,4 +325,37 @@ mod tests {
             "Recovered address should match the signer's address for RMP-based action"
         );
     }
+
+    #[test]
+    fn test_sign_update_leverage() {
+        use types::api::UpdateLeverage;
+
+        let signer = get_signer();
+        let expected_address = signer.address();
+
+        let action = Action::UpdateLeverage(UpdateLeverage {
+            asset: 3,
+            is_cross: true,
+            leverage: 20,
+        });
+
+        let nonce = chrono::Utc::now().timestamp_millis() as u64;
+        let action_request = action
+            .sign_sync(&signer, nonce, None, None, Chain::Mainnet)
+            .unwrap();
+
+        // Recover and verify
+        let recovered = Action::UpdateLeverage(UpdateLeverage {
+            asset: 3,
+            is_cross: true,
+            leverage: 20,
+        })
+        .recover(&action_request.signature, nonce, None, None, Chain::Mainnet)
+        .unwrap();
+
+        assert_eq!(
+            recovered, expected_address,
+            "Recovered address should match for UpdateLeverage action"
+        );
+    }
 }
