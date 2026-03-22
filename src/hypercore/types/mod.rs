@@ -3204,6 +3204,10 @@ pub(super) enum InfoRequest {
     UserFees {
         user: Address,
     },
+    /// Query a user's portfolio performance across time periods.
+    Portfolio {
+        user: Address,
+    },
     OutcomeMeta,
 }
 

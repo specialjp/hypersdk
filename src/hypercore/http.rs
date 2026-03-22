@@ -68,7 +68,7 @@ use crate::hypercore::{
         BasicOrder, BatchCancel, BatchCancelCloid, BatchModify, BatchOrder, ClearinghouseState,
         Fill, FundingRate, InfoRequest, OrderResponseStatus, OrderUpdate, ScheduleCancel,
         SendAsset, SendToken, SpotSend, SubAccount, UsdSend, UserBalance, UserFees, UserRole,
-        UserVaultEquity, VaultDetails,
+        UserVaultEquity, VaultDetails, VaultPortfolio,
     },
 };
 
@@ -1070,6 +1070,48 @@ impl Client {
             .http_client
             .post(api_url)
             .json(&InfoRequest::SubAccounts { user })
+            .send()
+            .await?
+            .json()
+            .await?;
+        Ok(resp)
+    }
+
+    /// Query a user's portfolio performance.
+    ///
+    /// Returns portfolio data across multiple time periods (day, week, month, allTime,
+    /// perpDay, perpWeek, perpMonth, perpAllTime). Each period includes account value
+    /// history, PnL history, and trading volume.
+    ///
+    /// # Parameters
+    ///
+    /// - `user`: The address to query portfolio for
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use hypersdk::hypercore;
+    /// use hypersdk::Address;
+    ///
+    /// # async fn example() -> anyhow::Result<()> {
+    /// let client = hypercore::mainnet();
+    /// let user: Address = "0x...".parse()?;
+    ///
+    /// let portfolio = client.portfolio(user).await?;
+    /// for (period, data) in &portfolio {
+    ///     println!("{}: volume = {}", period, data.vlm);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn portfolio(&self, user: Address) -> Result<Vec<(String, VaultPortfolio)>> {
+        let mut api_url = self.base_url.clone();
+        api_url.set_path("/info");
+
+        let resp = self
+            .http_client
+            .post(api_url)
+            .json(&InfoRequest::Portfolio { user })
             .send()
             .await?
             .json()
