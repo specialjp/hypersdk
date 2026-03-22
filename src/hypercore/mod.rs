@@ -1434,8 +1434,6 @@ pub async fn perp_meta_and_asset_ctxs(
     Ok((data.0, data.1))
 }
 
-// TODO: perpDexs
-
 /// Generates an EVM transfer address for cross-chain transfers.
 ///
 /// Creates addresses in the format `0x20000000000000000000000000000000000000XX`
