@@ -3189,4 +3189,60 @@ mod tests {
         // Check timestamp
         assert_eq!(state.time, 1768397010203);
     }
+
+    #[test]
+    fn test_builder_serialization() {
+        let builder = Builder {
+            b: "0x1234567890abcdef1234567890abcdef12345678".to_string(),
+            f: 10,
+        };
+        let json = serde_json::to_string(&builder).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["b"], "0x1234567890abcdef1234567890abcdef12345678");
+        assert_eq!(parsed["f"], 10);
+
+        // Round-trip
+        let deserialized: Builder = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.b, builder.b);
+        assert_eq!(deserialized.f, builder.f);
+    }
+
+    #[test]
+    fn test_batch_order_builder_field_serialization() {
+        use rust_decimal::dec;
+
+        // Without builder — "builder" key should be absent
+        let batch = BatchOrder {
+            orders: vec![OrderRequest {
+                asset: 0,
+                is_buy: true,
+                limit_px: dec!(50000),
+                sz: dec!(0.1),
+                reduce_only: false,
+                order_type: OrderTypePlacement::Limit {
+                    tif: TimeInForce::Gtc,
+                },
+                cloid: Default::default(),
+            }],
+            grouping: OrderGrouping::Na,
+            builder: None,
+        };
+        let json = serde_json::to_string(&batch).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert!(parsed.get("builder").is_none(), "builder should be absent when None");
+
+        // With builder — "builder" key should be present
+        let batch_with_builder = BatchOrder {
+            orders: vec![],
+            grouping: OrderGrouping::Na,
+            builder: Some(Builder {
+                b: "0xabc".to_string(),
+                f: 10,
+            }),
+        };
+        let json2 = serde_json::to_string(&batch_with_builder).unwrap();
+        let parsed2: serde_json::Value = serde_json::from_str(&json2).unwrap();
+        assert_eq!(parsed2["builder"]["b"], "0xabc");
+        assert_eq!(parsed2["builder"]["f"], 10);
+    }
 }
