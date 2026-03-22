@@ -3245,4 +3245,23 @@ mod tests {
         assert_eq!(parsed2["builder"]["b"], "0xabc");
         assert_eq!(parsed2["builder"]["f"], 10);
     }
+
+    #[test]
+    fn test_meta_and_asset_ctxs_info_request_serialization() {
+        // Without dex
+        let req = super::InfoRequest::MetaAndAssetCtxs { dex: None };
+        let json = serde_json::to_string(&req).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "metaAndAssetCtxs");
+        assert!(parsed.get("dex").is_none());
+
+        // With dex
+        let req_with_dex = super::InfoRequest::MetaAndAssetCtxs {
+            dex: Some("xyz".to_string()),
+        };
+        let json2 = serde_json::to_string(&req_with_dex).unwrap();
+        let parsed2: serde_json::Value = serde_json::from_str(&json2).unwrap();
+        assert_eq!(parsed2["type"], "metaAndAssetCtxs");
+        assert_eq!(parsed2["dex"], "xyz");
+    }
 }
