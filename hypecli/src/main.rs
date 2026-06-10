@@ -5,9 +5,13 @@ mod markets;
 mod morpho;
 mod multisig;
 mod orders;
+mod orders_list;
+mod positions;
+mod prio;
 mod send;
 mod subscribe;
 mod to_multisig;
+mod twap;
 mod utils;
 mod vault;
 
@@ -20,9 +24,13 @@ use markets::{DexesCmd, PerpsCmd, SpotCmd};
 use morpho::{MorphoApyCmd, MorphoPositionCmd, MorphoVaultApyCmd};
 use multisig::MultiSigCmd;
 use orders::OrderCmd;
+use orders_list::OrdersCmd;
+use positions::PositionsCmd;
+use prio::PrioCmd;
 use send::SendCmd;
 use subscribe::SubscribeCmd;
 use to_multisig::ToMultiSigCmd;
+use twap::TwapCmd;
 use vault::VaultCmd;
 
 /// Main CLI structure for hypecli - A command-line interface for Hyperliquid.
@@ -76,6 +84,16 @@ enum Command {
     /// Vault deposit and withdrawal commands
     #[command(subcommand)]
     Vault(VaultCmd),
+    /// Query open perpetual positions for a user
+    Positions(PositionsCmd),
+    /// Query historical orders or trade fills
+    #[command(subcommand)]
+    Orders(OrdersCmd),
+    /// Gossip priority auction: query status or place a bid
+    #[command(subcommand)]
+    Prio(PrioCmd),
+    /// Execute a stealth TWAP as independent market orders
+    Twap(TwapCmd),
 }
 
 impl Command {
@@ -96,6 +114,10 @@ impl Command {
             Self::Subscribe(cmd) => cmd.run().await,
             Self::Send(cmd) => cmd.run().await,
             Self::Vault(cmd) => cmd.run().await,
+            Self::Positions(cmd) => cmd.run().await,
+            Self::Orders(cmd) => cmd.run().await,
+            Self::Prio(cmd) => cmd.run().await,
+            Self::Twap(cmd) => cmd.run().await,
         }
     }
 }
@@ -163,7 +185,7 @@ Commands that modify state (orders, transfers, etc.) require authentication via 
   --keystore <NAME>     Foundry keystore name (located in ~/.foundry/keystores/)
   --password <PASS>     Keystore password (prompted if not provided)
 
-Note: Ledger hardware wallets are supported for multi-sig operations but NOT for
+Note: Ledger and Trezor hardware wallets are supported for multi-sig operations but NOT for
 order placement/cancellation (which require synchronous signing).
 
 ASSET NAME FORMATS
@@ -239,6 +261,31 @@ Query Morpho APY:
 
 Query Morpho Vault APY:
   hypecli morpho-vault-apy --vault <VAULT_ADDRESS>
+
+Query Open Positions:
+  hypecli positions <ADDRESS>
+  hypecli positions <ADDRESS> --format table
+  hypecli positions <ADDRESS> --coin BTC --format json
+
+  Options:
+  --coin <SYMBOL>       Filter to a specific coin (e.g., BTC, ETH)
+  --dex <NAME>          Query a HIP-3 DEX instead of the default perp DEX
+  --format <pretty|table|json>  Output format (default: pretty)
+
+  Shows size, side, entry price, unrealized PnL, leverage, liquidation price,
+  margin used, and cumulative funding for each open position.
+
+Query Historical Orders:
+  hypecli orders list <ADDRESS>
+  hypecli orders list <ADDRESS> --coin BTC --format json
+
+Query Trade Fills:
+  hypecli orders fills <ADDRESS>
+  hypecli orders fills <ADDRESS> --coin BTC --format table
+
+  Common options for both:
+  --coin <SYMBOL>             Filter by asset
+  --format <pretty|table|json>
 
 ORDER COMMANDS
 --------------
@@ -342,6 +389,31 @@ Convert Multi-Sig to Normal User:
     --chain mainnet \
     --private-key <HEX> \
     --multi-sig-addr <MULTISIG_ADDRESS>
+
+GOSSIP PRIORITY AUCTION COMMANDS
+--------------------------------
+
+Query Auction Status:
+  hypecli prio status
+
+  Shows current winning prices, time remaining, and winners for all 5 slots (0–4).
+  Slot 0 = highest priority (~10ms faster than slot 1, etc.).
+
+Place a Priority Bid:
+  hypecli prio bid \
+    --chain mainnet \
+    --private-key <HEX> \
+    --max 0.5 \
+    --ip 203.0.113.42 \
+    --slot 0
+
+  Arguments:
+    --max <HYPE>       Maximum bid in HYPE units (not wei). 1 HYPE = 1e18 wei.
+    --ip <ADDRESS>     IP address to receive prioritized gossip data.
+    --slot <0-4>       Slot index (default: 0, highest priority).
+
+  The winning bid amount is deducted from your spot HYPE balance and burned.
+  Use `hypecli prio status` first to decide how much to bid.
 
 EXAMPLE WORKFLOWS
 -----------------
@@ -566,7 +638,7 @@ Workflow 8: Stream HIP3 DEX Candle Data as JSON
 ERROR HANDLING
 --------------
 Common error scenarios:
-  - "Order operations require a private key or keystore" - Ledger not supported for orders
+  - "Order operations require a private key or keystore" - Ledger/Trezor not supported for orders
   - "keystore doesn't exist" - Check ~/.foundry/keystores/ for available keystores
   - "CLOID must be exactly 16 bytes" - Ensure CLOID is 32 hex characters
   - "Perpetual market 'X' not found" - Use `hypecli perps` to list valid market names

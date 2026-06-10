@@ -12,10 +12,11 @@ use alloy::{
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
+use serde_with::serde_as;
 
 use super::solidity;
 use crate::hypercore::{
-    Chain,
+    ApiError, Chain,
     types::{
         BatchCancel, BatchCancelCloid, BatchModify, BatchOrder, CORE_MAINNET_EIP712_DOMAIN,
         OrderResponseStatus, ScheduleCancel, Signature,
@@ -78,6 +79,8 @@ pub enum Action {
     UsdSend(UsdSendAction),
     /// Send asset.
     SendAsset(SendAssetAction),
+    /// Agent-signed send asset (destination must equal source).
+    AgentSendAsset(AgentSendAssetAction),
     /// Spot send.
     SpotSend(SpotSendAction),
     /// EVM user modify.
@@ -85,11 +88,13 @@ pub enum Action {
         using_big_blocks: bool,
     },
     ApproveAgent(ApproveAgent),
+    /// Approve maximum builder fee for a builder address.
+    ApproveBuilderFee(ApproveBuilderFee),
     /// Convert to multi-signature user.
     ConvertToMultiSigUser(ConvertToMultiSigUser),
     /// Update isolated margin.
     UpdateIsolatedMargin(UpdateIsolatedMargin),
-    /// Update leverage.
+    /// Update leverage for a perpetual asset.
     UpdateLeverage(UpdateLeverage),
     /// Deposit or withdraw from a vault.
     VaultTransfer(VaultTransfer),
@@ -97,6 +102,69 @@ pub enum Action {
     MultiSig(MultiSigAction),
     /// Invalidate a request.
     Noop,
+    /// Gossip priority bid (Dutch auction for read priority).
+    GossipPriorityBid(GossipPriorityBid),
+    /// Agent-signed: Enable DEX abstraction (deprecated, being discontinued).
+    AgentEnableDexAbstraction,
+    /// Agent-signed: Set abstraction mode.
+    AgentSetAbstraction {
+        /// The target abstraction mode. Serialized as a short code (`"i"`, `"u"`, `"p"`).
+        #[serde(
+            serialize_with = "serialize_abstraction_agent",
+            deserialize_with = "deserialize_abstraction_agent"
+        )]
+        abstraction: AbstractionMode,
+    },
+    /// User-signed: Enable/disable DEX abstraction for a user.
+    UserDexAbstraction(UserDexAbstractionAction),
+    /// User-signed: Set abstraction mode for a user.
+    UserSetAbstraction(UserSetAbstractionAction),
+    /// Place a TWAP order.
+    #[from(skip)]
+    TwapOrder {
+        twap: TwapOrderParams,
+    },
+    /// Cancel a TWAP order.
+    #[from(skip)]
+    TwapCancel {
+        /// Asset index.
+        a: usize,
+        /// TWAP ID to cancel.
+        t: u64,
+    },
+    /// Withdraw to Arbitrum L1.
+    #[from(skip)]
+    Withdraw3(Withdraw3Action),
+    /// Transfer between spot and perp balances.
+    #[from(skip)]
+    UsdClassTransfer(UsdClassTransferAction),
+    /// Stake native token (HYPE).
+    #[from(skip)]
+    #[serde(rename = "cDeposit")]
+    CDeposit {
+        /// Amount in wei (native token).
+        wei: u64,
+    },
+    /// Unstake native token (HYPE). 7-day queue.
+    #[from(skip)]
+    #[serde(rename = "cWithdraw")]
+    CWithdraw {
+        /// Amount in wei (native token).
+        wei: u64,
+    },
+    /// Delegate or undelegate staked tokens to a validator.
+    #[from(skip)]
+    TokenDelegate(TokenDelegateAction),
+    /// Reserve rate-limit request capacity.
+    #[from(skip)]
+    ReserveRequestWeight {
+        /// Number of requests to reserve (0.0005 USDC per request).
+        weight: u32,
+    },
+    /// HIP-3 backstop liquidator deposit/withdraw.
+    #[from(skip)]
+    #[serde(rename = "hip3LiquidatorTransfer")]
+    Hip3LiquidatorTransfer(Hip3LiquidatorTransferAction),
 }
 
 impl Action {
@@ -171,6 +239,16 @@ pub enum OkResponse {
     Default,
 }
 
+impl Response {
+    pub fn into_default(self) -> anyhow::Result<()> {
+        match self {
+            Response::Ok(OkResponse::Default) => Ok(()),
+            Response::Err(err) => Err(ApiError(err).into()),
+            other => Err(ApiError(format!("unexpected response: {other:?}")).into()),
+        }
+    }
+}
+
 impl Action {
     /// Signs this action synchronously and returns an `ActionRequest`.
     ///
@@ -198,7 +276,17 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
-            | Action::Noop => {
+            | Action::AgentSendAsset(_)
+            | Action::Noop
+            | Action::GossipPriorityBid(_)
+            | Action::AgentEnableDexAbstraction
+            | Action::AgentSetAbstraction { .. }
+            | Action::TwapOrder { .. }
+            | Action::TwapCancel { .. }
+            | Action::CDeposit { .. }
+            | Action::CWithdraw { .. }
+            | Action::ReserveRequestWeight { .. }
+            | Action::Hip3LiquidatorTransfer(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
                     source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
@@ -223,9 +311,35 @@ impl Action {
                 let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
                 signer.sign_dynamic_typed_data_sync(&typed_data)?
             }
+            Action::ApproveBuilderFee(inner) => {
+                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
+                signer.sign_dynamic_typed_data_sync(&typed_data)?
+            }
             Action::ConvertToMultiSigUser(inner) => {
                 let typed_data =
                     get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
+                signer.sign_dynamic_typed_data_sync(&typed_data)?
+            }
+            Action::UserDexAbstraction(inner) => {
+                let typed_data =
+                    get_typed_data::<solidity::UserDexAbstraction>(&inner, chain, None);
+                signer.sign_dynamic_typed_data_sync(&typed_data)?
+            }
+            Action::UserSetAbstraction(inner) => {
+                let typed_data =
+                    get_typed_data::<solidity::UserSetAbstraction>(&inner, chain, None);
+                signer.sign_dynamic_typed_data_sync(&typed_data)?
+            }
+            Action::Withdraw3(inner) => {
+                let typed_data = get_typed_data::<solidity::Withdraw3>(&inner, chain, None);
+                signer.sign_dynamic_typed_data_sync(&typed_data)?
+            }
+            Action::UsdClassTransfer(inner) => {
+                let typed_data = get_typed_data::<solidity::UsdClassTransfer>(&inner, chain, None);
+                signer.sign_dynamic_typed_data_sync(&typed_data)?
+            }
+            Action::TokenDelegate(inner) => {
+                let typed_data = get_typed_data::<solidity::TokenDelegate>(&inner, chain, None);
                 signer.sign_dynamic_typed_data_sync(&typed_data)?
             }
             // MultiSig - wrap in envelope
@@ -290,7 +404,17 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
-            | Action::Noop => {
+            | Action::AgentSendAsset(_)
+            | Action::Noop
+            | Action::GossipPriorityBid(_)
+            | Action::AgentEnableDexAbstraction
+            | Action::AgentSetAbstraction { .. }
+            | Action::TwapOrder { .. }
+            | Action::TwapCancel { .. }
+            | Action::CDeposit { .. }
+            | Action::CWithdraw { .. }
+            | Action::ReserveRequestWeight { .. }
+            | Action::Hip3LiquidatorTransfer(_) => {
                 let connection_id = self.hash(nonce, maybe_vault_address, expires_after)?;
                 let agent = solidity::Agent {
                     source: if chain.is_mainnet() { "a" } else { "b" }.to_string(),
@@ -317,12 +441,37 @@ impl Action {
                 let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
                 signer.sign_dynamic_typed_data(&typed_data).await?
             }
+            Action::ApproveBuilderFee(inner) => {
+                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
+                signer.sign_dynamic_typed_data(&typed_data).await?
+            }
             Action::ConvertToMultiSigUser(inner) => {
                 let typed_data =
                     get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
                 signer.sign_dynamic_typed_data(&typed_data).await?
             }
-            // MultiSig - wrap in envelope
+            Action::UserDexAbstraction(inner) => {
+                let typed_data =
+                    get_typed_data::<solidity::UserDexAbstraction>(&inner, chain, None);
+                signer.sign_dynamic_typed_data(&typed_data).await?
+            }
+            Action::UserSetAbstraction(inner) => {
+                let typed_data =
+                    get_typed_data::<solidity::UserSetAbstraction>(&inner, chain, None);
+                signer.sign_dynamic_typed_data(&typed_data).await?
+            }
+            Action::Withdraw3(inner) => {
+                let typed_data = get_typed_data::<solidity::Withdraw3>(&inner, chain, None);
+                signer.sign_dynamic_typed_data(&typed_data).await?
+            }
+            Action::UsdClassTransfer(inner) => {
+                let typed_data = get_typed_data::<solidity::UsdClassTransfer>(&inner, chain, None);
+                signer.sign_dynamic_typed_data(&typed_data).await?
+            }
+            Action::TokenDelegate(inner) => {
+                let typed_data = get_typed_data::<solidity::TokenDelegate>(&inner, chain, None);
+                signer.sign_dynamic_typed_data(&typed_data).await?
+            }
             Action::MultiSig(inner) => {
                 let multsig_hash =
                     utils::rmp_hash(&inner, nonce, maybe_vault_address, expires_after)?;
@@ -380,7 +529,17 @@ impl Action {
             | Action::UpdateIsolatedMargin(_)
             | Action::UpdateLeverage(_)
             | Action::VaultTransfer(_)
-            | Action::Noop => {
+            | Action::AgentSendAsset(_)
+            | Action::Noop
+            | Action::GossipPriorityBid(_)
+            | Action::AgentEnableDexAbstraction
+            | Action::AgentSetAbstraction { .. }
+            | Action::TwapOrder { .. }
+            | Action::TwapCancel { .. }
+            | Action::CDeposit { .. }
+            | Action::CWithdraw { .. }
+            | Action::ReserveRequestWeight { .. }
+            | Action::Hip3LiquidatorTransfer(_) => {
                 let expires_after =
                     maybe_expires_after.map(|after| after.timestamp_millis() as u64);
                 let connection_id = self
@@ -408,12 +567,37 @@ impl Action {
                 let typed_data = get_typed_data::<solidity::ApproveAgent>(&inner, chain, None);
                 Ok(typed_data.eip712_signing_hash()?)
             }
+            Action::ApproveBuilderFee(inner) => {
+                let typed_data = get_typed_data::<solidity::ApproveBuilderFee>(&inner, chain, None);
+                Ok(typed_data.eip712_signing_hash()?)
+            }
             Action::ConvertToMultiSigUser(inner) => {
                 let typed_data =
                     get_typed_data::<solidity::ConvertToMultiSigUser>(&inner, chain, None);
                 Ok(typed_data.eip712_signing_hash()?)
             }
-            // MultiSig - hash the entire multisig action and wrap in envelope
+            Action::UserDexAbstraction(inner) => {
+                let typed_data =
+                    get_typed_data::<solidity::UserDexAbstraction>(&inner, chain, None);
+                Ok(typed_data.eip712_signing_hash()?)
+            }
+            Action::UserSetAbstraction(inner) => {
+                let typed_data =
+                    get_typed_data::<solidity::UserSetAbstraction>(&inner, chain, None);
+                Ok(typed_data.eip712_signing_hash()?)
+            }
+            Action::Withdraw3(inner) => {
+                let typed_data = get_typed_data::<solidity::Withdraw3>(&inner, chain, None);
+                Ok(typed_data.eip712_signing_hash()?)
+            }
+            Action::UsdClassTransfer(inner) => {
+                let typed_data = get_typed_data::<solidity::UsdClassTransfer>(&inner, chain, None);
+                Ok(typed_data.eip712_signing_hash()?)
+            }
+            Action::TokenDelegate(inner) => {
+                let typed_data = get_typed_data::<solidity::TokenDelegate>(&inner, chain, None);
+                Ok(typed_data.eip712_signing_hash()?)
+            }
             Action::MultiSig(inner) => {
                 let expires_after =
                     maybe_expires_after.map(|after| after.timestamp_millis() as u64);
@@ -586,7 +770,7 @@ pub struct SendAssetAction {
     pub destination: Address,
     /// Source DEX, can be empty
     pub source_dex: String,
-    /// Destiation DEX, can be empty
+    /// Destination DEX, can be empty
     pub destination_dex: String,
     /// Token
     pub token: String,
@@ -596,6 +780,38 @@ pub struct SendAssetAction {
     /// From subaccount, can be empty
     pub from_sub_account: String,
     /// Request nonce
+    pub nonce: u64,
+}
+
+/// Agent-signed send asset.
+///
+/// Similar to [`SendAssetAction`] but signed with an agent (API wallet) using
+/// L1-action signing (msgpack + `Agent` wrapper). The `destination` must equal
+/// the source address, so this is restricted to self-transfers across DEXes,
+/// the spot balance, or between subaccounts.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#agent-send-asset>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSendAssetAction {
+    /// The destination address (must equal the source address).
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub destination: Address,
+    /// Source DEX, empty string for the default USDC perp DEX or "spot" for spot.
+    pub source_dex: String,
+    /// Destination DEX, empty string for the default USDC perp DEX or "spot" for spot.
+    pub destination_dex: String,
+    /// Token, e.g. `"PURR:0xc4bf3f870c0e9465323c0b6ed28096c2"`.
+    pub token: String,
+    /// Amount to send.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+    /// Source subaccount address, or empty string if sending from the main account.
+    pub from_sub_account: String,
+    /// Request nonce (timestamp in ms); must match the outer nonce.
     pub nonce: u64,
 }
 
@@ -623,6 +839,29 @@ pub struct ApproveAgent {
     /// up to 3 named ones, and 2 named agents per subaccount.
     pub agent_name: Option<String>,
     /// Request nonce
+    pub nonce: u64,
+}
+
+/// Approve builder fee.
+///
+/// Approves the maximum fee rate a builder is allowed to charge for routed orders.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#approve-a-builder-fee>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveBuilderFee {
+    /// Signature chain ID.
+    ///
+    /// For arbitrum use [`crate::hypercore::ARBITRUM_MAINNET_CHAIN_ID`] or [`crate::hypercore::ARBITRUM_TESTNET_CHAIN_ID`].
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// The maximum allowed builder fee rate as a percent string; e.g. "0.001%".
+    pub max_fee_rate: String,
+    /// Builder address.
+    pub builder: Address,
+    /// Request nonce (timestamp in milliseconds).
+    /// Must match nonce in outer request body.
     pub nonce: u64,
 }
 
@@ -671,15 +910,19 @@ pub struct UpdateIsolatedMargin {
     pub ntli: u64,
 }
 
-/// Request to update leverage.
+/// Request to update leverage for a perpetual asset.
+///
+/// Sets the leverage and margin mode (cross or isolated) for a specific asset.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#update-leverage>
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateLeverage {
-    /// Asset index.
+    /// Asset index of the perpetual.
     pub asset: usize,
     /// `true` for cross margin, `false` for isolated margin.
     pub is_cross: bool,
-    /// Leverage value.
+    /// Leverage value (e.g., 10 for 10x).
     pub leverage: u32,
 }
 
@@ -699,6 +942,183 @@ pub struct VaultTransfer {
     pub is_deposit: bool,
     /// Amount of USDC in micro-units (1 USD = 1,000,000).
     pub usd: u64,
+}
+
+/// Account abstraction mode for Hyperliquid.
+///
+/// Determines how spot and perps balances interact:
+/// - **Standard** (`"i"` / `"disabled"`): Separate perp and spot balances, separate DEX balances.
+///   No daily action limits. Required for builder fee accrual.
+/// - **UnifiedAccount** (`"u"` / `"unifiedAccount"`): Single balance per asset across all DEXes.
+///   Limited to 50k user actions per day.
+/// - **PortfolioMargin** (`"p"` / `"portfolioMargin"`): Most capital-efficient. Pre-alpha.
+///   Limited to 50k user actions per day.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, derive_more::Display)]
+pub enum AbstractionMode {
+    #[default]
+    Standard,
+    UnifiedAccount,
+    PortfolioMargin,
+}
+
+impl AbstractionMode {
+    /// Returns the full API string (used in info queries and user-signed actions).
+    #[must_use]
+    pub fn api_str(&self) -> &'static str {
+        match self {
+            Self::Standard => "disabled",
+            Self::UnifiedAccount => "unifiedAccount",
+            Self::PortfolioMargin => "portfolioMargin",
+        }
+    }
+
+    /// Returns the short code used in agent-signed actions.
+    #[must_use]
+    pub fn agent_code(&self) -> &'static str {
+        match self {
+            Self::Standard => "i",
+            Self::UnifiedAccount => "u",
+            Self::PortfolioMargin => "p",
+        }
+    }
+
+    /// Parses an abstraction mode from its API string or short code.
+    pub fn from_api_str(s: &str) -> Result<Self, String> {
+        match s {
+            "disabled" | "i" | "standard" | "Standard" => Ok(Self::Standard),
+            "unifiedAccount" | "u" | "unified" => Ok(Self::UnifiedAccount),
+            "portfolioMargin" | "p" | "portfolio" => Ok(Self::PortfolioMargin),
+            other => Err(format!("unknown abstraction mode: {other}")),
+        }
+    }
+
+    #[must_use]
+    pub const fn is_standard(&self) -> bool {
+        matches!(self, Self::Standard)
+    }
+
+    #[must_use]
+    pub const fn is_unified_account(&self) -> bool {
+        matches!(self, Self::UnifiedAccount)
+    }
+
+    #[must_use]
+    pub const fn is_portfolio_margin(&self) -> bool {
+        matches!(self, Self::PortfolioMargin)
+    }
+
+    #[must_use]
+    pub const fn has_daily_action_limit(&self) -> bool {
+        !matches!(self, Self::Standard)
+    }
+}
+
+fn serialize_abstraction_api<S>(mode: &AbstractionMode, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(mode.api_str())
+}
+
+fn deserialize_abstraction_api<'de, D>(deserializer: D) -> Result<AbstractionMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    AbstractionMode::from_api_str(&s).map_err(serde::de::Error::custom)
+}
+
+fn serialize_abstraction_agent<S>(mode: &AbstractionMode, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(mode.agent_code())
+}
+
+fn deserialize_abstraction_agent<'de, D>(deserializer: D) -> Result<AbstractionMode, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    AbstractionMode::from_api_str(&s).map_err(serde::de::Error::custom)
+}
+
+/// Gossip priority bid action.
+///
+/// Bids on a Dutch auction slot for read-priority gossip data. Lower slotId = higher
+/// priority. Fees are deducted from the spot HYPE balance and burned.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/priority-fees>
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GossipPriorityBid {
+    /// Slot index (0–4). Lower index = higher priority (~10ms faster per slot).
+    pub slot_id: u8,
+    /// IP address to receive prioritized gossip data.
+    pub ip: String,
+    /// Maximum HYPE to bid in wei (1 HYPE = 10^18 wei).
+    ///
+    /// Serialized as a plain JSON number since Hyperliquid's API accepts u64-safe values.
+    pub max_gas: u64,
+}
+
+/// User-signed DEX abstraction action.
+///
+/// Enables or disables DEX abstraction for a given user address. This uses EIP-712
+/// signing with the `HyperliquidTransaction:UserDexAbstraction` type.
+///
+/// > **Deprecated**: DEX abstraction is being discontinued. Prefer [`UserSetAbstractionAction`]
+/// > with [`crate::hypercore::AbstractionMode`] instead.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#enable-dex-abstraction-user-signed>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserDexAbstractionAction {
+    /// Signature chain ID (e.g., `"0x66eee"` for testnet, `"0xa4b1"` for mainnet).
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// The user address to enable/disable DEX abstraction for (lowercase hex).
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub user: Address,
+    /// `true` to enable, `false` to disable DEX abstraction.
+    pub enabled: bool,
+    /// Request nonce (timestamp in ms).
+    pub nonce: u64,
+}
+
+/// User-signed set-abstraction action.
+///
+/// Sets the account abstraction mode (Standard, UnifiedAccount, or PortfolioMargin)
+/// for a given user address. This uses EIP-712 signing with the
+/// `HyperliquidTransaction:UserSetAbstraction` type.
+///
+/// <https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/exchange-endpoint#set-account-abstraction-mode-user-signed>
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UserSetAbstractionAction {
+    /// Signature chain ID (e.g., `"0x66eee"` for testnet, `"0xa4b1"` for mainnet).
+    pub signature_chain_id: String,
+    /// The chain this action is being executed on.
+    pub hyperliquid_chain: Chain,
+    /// The user address to set the abstraction mode for (lowercase hex).
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub user: Address,
+    /// The abstraction mode (e.g., Standard, UnifiedAccount, PortfolioMargin).
+    #[serde(
+        serialize_with = "serialize_abstraction_api",
+        deserialize_with = "deserialize_abstraction_api"
+    )]
+    pub abstraction: AbstractionMode,
+    /// Request nonce (timestamp in ms).
+    pub nonce: u64,
 }
 
 /// Multi-signature action payload.
@@ -862,6 +1282,83 @@ pub struct MultiSigAction {
     pub payload: MultiSigPayload,
 }
 
+/// TWAP order parameters.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TwapOrderParams {
+    /// Asset index.
+    pub a: usize,
+    /// `true` for buy, `false` for sell.
+    pub b: bool,
+    /// Size.
+    #[serde(with = "rust_decimal::serde::str")]
+    pub s: Decimal,
+    /// Reduce only.
+    pub r: bool,
+    /// Duration in minutes.
+    pub m: u32,
+    /// Randomize execution timing.
+    pub t: bool,
+}
+
+/// Withdraw to Arbitrum L1.
+///
+/// Uses EIP-712 human-readable signing. $1 fee, ~5 minute finalization.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Withdraw3Action {
+    pub signature_chain_id: String,
+    pub hyperliquid_chain: Chain,
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub destination: Address,
+    #[serde(with = "rust_decimal::serde::str")]
+    pub amount: Decimal,
+    pub time: u64,
+}
+
+/// Transfer between spot and perp balances.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UsdClassTransferAction {
+    pub signature_chain_id: String,
+    pub hyperliquid_chain: Chain,
+    /// Amount to transfer, optionally with " subaccount:0x..." suffix.
+    pub amount: String,
+    /// `true` to transfer to perp, `false` to transfer to spot.
+    pub to_perp: bool,
+    pub nonce: u64,
+}
+
+/// Delegate or undelegate staked tokens to a validator.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenDelegateAction {
+    /// Validator address.
+    #[serde(
+        serialize_with = "crate::hypercore::utils::serialize_address_as_hex",
+        deserialize_with = "crate::hypercore::utils::deserialize_address_from_hex"
+    )]
+    pub validator: Address,
+    /// `true` to undelegate, `false` to delegate.
+    pub is_undelegate: bool,
+    /// Amount in wei of native token.
+    pub wei: u64,
+}
+
+/// HIP-3 backstop liquidator transfer.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Hip3LiquidatorTransferAction {
+    /// DEX name.
+    pub dex: String,
+    /// Notional amount in 1e-6 units (must be multiple of 1,000,000,000).
+    pub ntl: u64,
+    /// `true` to deposit, `false` to withdraw.
+    pub is_deposit: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use alloy::primitives::address;
@@ -887,22 +1384,6 @@ mod tests {
     }
 
     #[test]
-    fn update_leverage_serialization() {
-        let action = Action::UpdateLeverage(UpdateLeverage {
-            asset: 3,
-            is_cross: true,
-            leverage: 20,
-        });
-
-        let json = serde_json::to_string(&action).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["type"], "updateLeverage");
-        assert_eq!(parsed["asset"], 3);
-        assert_eq!(parsed["isCross"], true);
-        assert_eq!(parsed["leverage"], 20);
-    }
-
-    #[test]
     fn vault_transfer_serialization() {
         use alloy::primitives::address;
 
@@ -924,7 +1405,200 @@ mod tests {
             assert!(vt.is_deposit);
             assert_eq!(vt.usd, 100_500_000);
         } else {
-            panic!("wrong variant");
+            assert!(false, "wrong variant");
         }
+    }
+
+    #[test]
+    fn agent_send_asset_serialization() {
+        use rust_decimal::dec;
+
+        let action = Action::AgentSendAsset(AgentSendAssetAction {
+            destination: address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431"),
+            source_dex: String::new(),
+            destination_dex: "spot".to_string(),
+            token: "PURR:0xc4bf3f870c0e9465323c0b6ed28096c2".to_string(),
+            amount: dec!(0.01),
+            from_sub_account: String::new(),
+            nonce: 1_700_000_000_000,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"agentSendAsset\""));
+        assert!(json.contains("\"destination\":\"0x5ecb62791b22a3108367c2a2024019ee7ea88431\""));
+        assert!(json.contains("\"sourceDex\":\"\""));
+        assert!(json.contains("\"destinationDex\":\"spot\""));
+        assert!(json.contains("\"token\":\"PURR:0xc4bf3f870c0e9465323c0b6ed28096c2\""));
+        assert!(json.contains("\"amount\":\"0.01\""));
+        assert!(json.contains("\"fromSubAccount\":\"\""));
+        assert!(json.contains("\"nonce\":1700000000000"));
+
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Action::AgentSendAsset(inner) => {
+                assert_eq!(inner.source_dex, "");
+                assert_eq!(inner.destination_dex, "spot");
+                assert_eq!(inner.nonce, 1_700_000_000_000);
+                assert_eq!(inner.amount, dec!(0.01));
+            }
+            _ => assert!(false, "wrong variant"),
+        }
+    }
+
+    #[test]
+    fn update_leverage_serialization() {
+        let action = Action::UpdateLeverage(UpdateLeverage {
+            asset: 0,
+            is_cross: true,
+            leverage: 10,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"updateLeverage\""));
+        assert!(json.contains("\"asset\":0"));
+        assert!(json.contains("\"isCross\":true"));
+        assert!(json.contains("\"leverage\":10"));
+
+        // Round-trip
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        if let Action::UpdateLeverage(ul) = deserialized {
+            assert_eq!(ul.asset, 0);
+            assert!(ul.is_cross);
+            assert_eq!(ul.leverage, 10);
+        } else {
+            assert!(false, "wrong variant");
+        }
+    }
+
+    #[test]
+    fn approve_builder_fee_serialization() {
+        let action = Action::ApproveBuilderFee(ApproveBuilderFee {
+            signature_chain_id: "0xa4b1".to_string(),
+            hyperliquid_chain: Chain::Mainnet,
+            max_fee_rate: "0.001%".to_string(),
+            builder: "0x8c967e73e7b15087c42a10d344cff4c96d877f1d"
+                .parse()
+                .unwrap(),
+            nonce: 1_700_000_000_000,
+        });
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"approveBuilderFee\""));
+        assert!(json.contains("\"maxFeeRate\":\"0.001%\""));
+        assert!(json.contains("\"builder\":\"0x8c967e73e7b15087c42a10d344cff4c96d877f1d\""));
+        assert!(json.contains("\"nonce\":1700000000000"));
+
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Action::ApproveBuilderFee(inner) => {
+                assert_eq!(inner.max_fee_rate, "0.001%");
+                assert_eq!(
+                    inner.builder,
+                    "0x8c967e73e7b15087c42a10d344cff4c96d877f1d"
+                        .parse::<Address>()
+                        .unwrap()
+                );
+                assert_eq!(inner.nonce, 1_700_000_000_000);
+            }
+            _ => assert!(false, "wrong variant"),
+        }
+    }
+
+    #[test]
+    fn agent_set_abstraction_serialization() {
+        // Agent-signed action should serialize abstraction as short code
+        let action = Action::AgentSetAbstraction {
+            abstraction: AbstractionMode::UnifiedAccount,
+        };
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"type\":\"agentSetAbstraction\""));
+        assert!(json.contains("\"abstraction\":\"u\""));
+
+        // Round-trip through JSON
+        let deserialized: Action = serde_json::from_str(&json).unwrap();
+        match deserialized {
+            Action::AgentSetAbstraction { abstraction } => {
+                assert_eq!(abstraction, AbstractionMode::UnifiedAccount);
+            }
+            _ => assert!(false, "wrong variant"),
+        }
+
+        // Test all modes
+        for (mode, expected_code) in [
+            (AbstractionMode::Standard, "i"),
+            (AbstractionMode::UnifiedAccount, "u"),
+            (AbstractionMode::PortfolioMargin, "p"),
+        ] {
+            let action = Action::AgentSetAbstraction { abstraction: mode };
+            let json = serde_json::to_string(&action).unwrap();
+            assert!(
+                json.contains(&format!("\"abstraction\":\"{expected_code}\"")),
+                "mode {:?} should serialize to \"{expected_code}\", got: {json}",
+                mode
+            );
+        }
+    }
+
+    #[test]
+    fn user_set_abstraction_serialization() {
+        use alloy::primitives::address;
+
+        // User-signed action should serialize abstraction as full API string
+        let action = UserSetAbstractionAction {
+            signature_chain_id: "0xa4b1".to_string(),
+            hyperliquid_chain: Chain::Mainnet,
+            user: address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431"),
+            abstraction: AbstractionMode::PortfolioMargin,
+            nonce: 1_700_000_000_000,
+        };
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"abstraction\":\"portfolioMargin\""));
+        assert!(json.contains("\"signatureChainId\":\"0xa4b1\""));
+
+        // Standard mode
+        let action = UserSetAbstractionAction {
+            signature_chain_id: "0xa4b1".to_string(),
+            hyperliquid_chain: Chain::Mainnet,
+            user: address!("0x5eCb62791B22A3108367c2A2024019Ee7eA88431"),
+            abstraction: AbstractionMode::Standard,
+            nonce: 1_700_000_000_000,
+        };
+
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains("\"abstraction\":\"disabled\""));
+    }
+
+    #[test]
+    fn abstraction_mode_conversions() {
+        assert_eq!(AbstractionMode::Standard.api_str(), "disabled");
+        assert_eq!(AbstractionMode::UnifiedAccount.api_str(), "unifiedAccount");
+        assert_eq!(
+            AbstractionMode::PortfolioMargin.api_str(),
+            "portfolioMargin"
+        );
+
+        assert_eq!(AbstractionMode::Standard.agent_code(), "i");
+        assert_eq!(AbstractionMode::UnifiedAccount.agent_code(), "u");
+        assert_eq!(AbstractionMode::PortfolioMargin.agent_code(), "p");
+
+        assert_eq!(
+            AbstractionMode::from_api_str("disabled").unwrap(),
+            AbstractionMode::Standard
+        );
+        assert_eq!(
+            AbstractionMode::from_api_str("i").unwrap(),
+            AbstractionMode::Standard
+        );
+        assert_eq!(
+            AbstractionMode::from_api_str("unifiedAccount").unwrap(),
+            AbstractionMode::UnifiedAccount
+        );
+        assert_eq!(
+            AbstractionMode::from_api_str("portfolioMargin").unwrap(),
+            AbstractionMode::PortfolioMargin
+        );
+        assert!(AbstractionMode::from_api_str("unknown").is_err());
+        assert!(AbstractionMode::default().is_standard());
     }
 }

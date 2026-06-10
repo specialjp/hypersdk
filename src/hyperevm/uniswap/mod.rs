@@ -493,8 +493,8 @@ where
         Ok(positions)
     }
 
-    /// Get the pool address.
-    pub async fn get_pool_addres(
+    /// Resolves the Uniswap V3 pool contract for `token0`, `token1`, and `fee`.
+    pub async fn get_pool_address(
         &self,
         token0: Address,
         token1: Address,

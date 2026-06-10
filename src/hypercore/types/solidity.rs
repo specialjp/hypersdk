@@ -44,6 +44,13 @@ sol! {
         uint64 nonce;
     }
 
+    struct ApproveBuilderFee {
+        string hyperliquidChain;
+        string maxFeeRate;
+        address builder;
+        uint64 nonce;
+    }
+
     struct ConvertToMultiSigUser {
         string hyperliquidChain;
         string signers;
@@ -54,6 +61,49 @@ sol! {
         string hyperliquidChain;
         bytes32 multiSigActionHash;
         uint64 nonce;
+    }
+
+    /// User-signed DEX abstraction action.
+    ///
+    /// Enables or disables DEX abstraction for a given user address.
+    /// EIP-712 type: `HyperliquidTransaction:UserDexAbstraction`.
+    struct UserDexAbstraction {
+        string hyperliquidChain;
+        address user;
+        bool enabled;
+        uint64 nonce;
+    }
+
+    /// User-signed set-abstraction action.
+    ///
+    /// Sets the account abstraction mode for a given user address.
+    /// EIP-712 type: `HyperliquidTransaction:UserSetAbstraction`.
+    struct UserSetAbstraction {
+        string hyperliquidChain;
+        address user;
+        string abstraction;
+        uint64 nonce;
+    }
+
+    struct Withdraw3 {
+        string hyperliquidChain;
+        string destination;
+        string amount;
+        uint64 time;
+    }
+
+    struct UsdClassTransfer {
+        string hyperliquidChain;
+        string amount;
+        bool toPerp;
+        uint64 nonce;
+    }
+
+    struct TokenDelegate {
+        string hyperliquidChain;
+        address validator;
+        bool isUndelegate;
+        uint64 wei;
     }
 }
 
